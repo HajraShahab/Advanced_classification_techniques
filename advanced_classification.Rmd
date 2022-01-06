@@ -1,0 +1,328 @@
+---
+title: "Homework 5"
+author: "Hajra Shahab"
+output:
+  html_document:
+    highlight: pygments
+    theme: lumen
+    toc: yes
+    toc_depth: 3
+  word_document:
+    toc: yes
+    toc_depth: '3'
+---
+
+
+### Preamble: Loading packages and data
+
+```{r, message=FALSE, warning=FALSE}
+library(rpart)
+library(randomForest)
+library(pROC)
+library(gbm)
+library(factoextra)
+options(scipen = 4)
+load(file = "hw5dat.Rda")
+```
+
+
+##### In this assignment we will continue to work with the `marketing` dataset from Homework 4. Run the code chunk below to load the data.
+
+```{r, cache = TRUE}
+# Read in the marketing data
+marketing <- read.csv("bank-full.csv")
+
+set.seed(981)
+
+|
+marketing.more.idx <- sample(which(marketing$y == "yes"), 15000, replace = TRUE)
+marketing.upsample <- rbind(marketing,
+                            marketing[marketing.more.idx, ])
+
+# Trim job strings to 5 characters
+# marketing.upsample <- transform(marketing.upsample, job = strtrim(job, 5))
+
+# Randomly select 20% of the data to be held out for model validation
+test.indexes <- sample(1:nrow(marketing.upsample), 
+                       round(0.2 * nrow(marketing.upsample)))
+train.indexes <- setdiff(1:nrow(marketing.upsample), test.indexes)
+
+# Just pull the covariates available to marketers (cols 1:8) and the outcome (col 17)
+marketing.train <- marketing.upsample[train.indexes, c(1:8, 17)]
+marketing.test <- marketing.upsample[test.indexes, c(1:8, 17)]
+
+```
+
+
+
+### Problem 1: Random forests
+
+##### (a) Use the `randomForest` command to fit a random forest to `marketing.train` (this may take a minute or two to run).  Call your fit `marketing.rf`.  Show a print-out of your random Forest fit.  This print-out contains a confusion matrix.  Are the predicted classes given as the rows or columns of this table?  
+
+```{r, cache = TRUE}
+set.seed(1)
+
+marketing.rf <- randomForest(as.factor(y) ~ ., data = marketing.train, mtry = 3, importance=TRUE)
+marketing.rf
+
+```
+
+The predicted classes are given as the rows of the table.
+
+
+##### (b) Construct a variable importance plot of your random forest fit.  Which variables turn out to be the most important?
+
+```{r}
+
+varImpPlot(marketing.rf, newdata = marketing.test)
+importance(marketing.rf)
+```
+
+According to Increase in Node Purity (Mean Decrease Gini): Balance and Age are the most important 
+According to % Increase in MSE (Mean Decrease Accuracy): Housing and Age are the most important 
+
+
+##### (c) Use the `predict` command to obtain probability estimates on the test data. Produce the confusion matrix with a cutoff threshold of 0.3 and compute the following metrics: (1) accuracy, (2) sensitivity (a.k.a. recall), (3) specificity, (4) precision (a.k.a. positive predictive value), and (5) negative predictive value. Then recreate the `marketing.pruned` tree from HW4 (you can hardcode the `cp` value you obtained from HW4 when pruning the tree; no need to derive it from the cptable / plot again) and compute the same five metrics at cutoff threshold of 0.3. Compare the metrics of the two models and comment on your observation.
+
+
+```{r}
+marketing.prob <- predict(marketing.rf, marketing.test, type = "prob")
+score.prob <- marketing.prob[, "yes"]
+
+pred.class <- ifelse(score.prob >= 0.3, "yes", "no") 
+
+predicted <- factor(pred.class, levels = c("yes", "no"))
+observed <- factor(marketing.test$y, levels = c("yes", "no"))
+conf.mat <- table(predicted, observed)
+
+#accuracy 
+(conf.mat[1,1] + conf.mat[2,2]) / (conf.mat[1,1] + conf.mat[1,2] + conf.mat[2,1] + conf.mat[2,2])
+#sensitivity
+conf.mat[2,2] / (conf.mat[1,2] + conf.mat[2,2])
+# specificity
+conf.mat[1,1] / (conf.mat[1,1] + conf.mat[2,1])
+#precision (positive predictive value)
+conf.mat[2,2] / (conf.mat[2,2] + conf.mat[2,1])
+#negative predictive value 
+conf.mat[1,1] / (conf.mat[1,1] + conf.mat[1,2])
+
+marketing.full <- rpart(y ~ ., data = marketing.train, 
+                        control = rpart.control(minsplit=100, cp=0.002))
+marketing.pruned <- prune(marketing.full, cp = 0.002033021)
+print(marketing.pruned)
+
+marketing.pruned.prob <- predict(marketing.pruned, marketing.test, type = "prob")
+score.pruned.prob <- marketing.pruned.prob[, "yes"]
+
+pred.class <- ifelse(score.pruned.prob >= 0.3, "yes", "no")
+
+predicted <- factor(pred.class, levels = c("yes", "no"))
+observed <- factor(marketing.test$y, levels = c("yes", "no"))
+conf.mat2 <- table (predicted, observed)
+
+#accuracy 
+(conf.mat2[1,1] + conf.mat2[2,2]) / (conf.mat2[1,1] + conf.mat2[1,2] + conf.mat2[2,1] + conf.mat2[2,2])
+#sensitivity
+conf.mat2[2,2] / (conf.mat2[1,2] + conf.mat2[2,2])
+# specificity
+conf.mat2[1,1] / (conf.mat2[1,1] + conf.mat2[2,1])
+#precision (positive predictive value)
+conf.mat2[2,2] / (conf.mat2[2,2] + conf.mat2[2,1])
+#negative predictive value 
+conf.mat2[1,1] / (conf.mat2[1,1] + conf.mat2[1,2])
+
+```
+
+Accuracy:  0.8457067
+Sensitivity:  0.825047
+Specificity: 0.8863692
+Precision (positive predictive value): 0.9346007
+Negative predictive value: 0.7202083
+
+Accuracy: 0.6939877
+Sensitivity: 0.8032561
+Specificity: 0.4789253
+Precision (positive predictive value): 0.7521107
+Negative predictive value: 0.5529311
+
+Overall, the random forest fit at a cutoff of 0.3 performs better than pruned tree. We can observe significant improvement across all metrics especially around accuracy, specificity, precision, and negative predictive value. 
+
+##### (d) Use the `roc` function from the `pROC` package to create two ROC objects, one for the random forest and the other for the pruned tree (see online documentation [here](https://www.rdocumentation.org/packages/pROC/versions/1.17.0.1/topics/roc)). Use `plot()` on the ROC object to plot the ROC curve for the random forest (see online documentation [here](https://www.rdocumentation.org/packages/pROC/versions/1.17.0.1/topics/plot.roc)). Also set `col = "blue"` for the ROC curve of the random forest. Then on the same plot, overlay the ROC curve for the pruned tree (use `add = TRUE` to overlay the curve on the previous plot, and use `"black"` as the color).  Calculate the AUC for both methods (can you find it in the ROC objects?). Do we do better with random forests than with a single tree? Is the random forest strictly performing better in every region on the plot? Are most of the gains at high or low values of Specificity? We knew from HW4 that the high-sensitivity, low-specificity region is most relevant in this marketing setting. Does it correspond to the region where we observe most of the gains in the ROC plot?
+
+
+**Note:** If you step through your code line-by-line, make sure you **highlight both `plot()` lines** and run them **together at the same time**. If you run the second `plot()` line with `add = TRUE` by itself you'll get an error. 
+
+```{r, fig.height = 5, fig.width = 5}
+#ROC for random forest 
+roc.1 <- roc(marketing.test$y, score.prob, auc = TRUE)  
+
+#ROC for pruned 
+roc.2 <- roc(marketing.test$y, score.pruned.prob, auc=TRUE) 
+
+plot(roc.1, col = "blue")
+plot(roc.2, col="black",add = TRUE)
+
+#calculate AUC for ROC1
+roc.1$auc
+
+#calculate AUC for ROC2
+roc.2$auc
+```
+
+- We do much better with Random Forest than a single tree since the AUC for former is 0.9166 versus 0.6576 for pruned. We can also see that the Random Forest is strictly performing better in every region on the plot. Most of the gains are at low levels of Specificity which correspond to the region where we observe most of the gains in ROC plot. The rule is that we perform better at low levels of Specificity. 
+
+
+### Problem 2: Boosted Trees for Classification
+
+##### In Lab 5 we learned how to use `gbm` function to fit a boosted tree model in the regression context. In this problem, we are going to see how to use `gbm` in the context of classification tasks. It takes a long time to run `gbm` on large datasets, so in order to shorten the runtime we will only use a subset of the training data to fit the boosted tree model. Run the code below.
+
+```{r, cache=TRUE}
+set.seed(1)
+subset = sample(nrow(marketing.train), 15000)
+marketing.train.boost = marketing.train[subset,]
+```
+
+##### (a) For classification with binary outcomes, `gbm` requires the values of the outcome variable to be either 0 or 1, so we need to convert the outcome variable `y` (yes-no) into 0-1 outcomes. Recode the `y` variable in `marketing.train.boost` as 0-1 outcomes, with 0 for "no" and 1 for "yes".
+
+```{r}
+#marketing.train.boost <- ifelse(marketing$y == "yes", 1, 0)
+```
+
+##### (b) Use the `gbm` command to fit a boosted tree model on the `marketing.train.boost` dataset. For binary classification problems like ours, set `distribution = "bernoulli"`. Set the learning rate to `0.05` and allow for trees up to depth `4`. We want to use `gbm`'s built-in cross-validation functionality to choose the optimal number of trees, so let's grow up to `20000` trees and also set `cv.folds = 5`. Name your model `marketing.boost`. 
+
+> **ALERT:** This command takes a LONG TIME to run (it took me 10 minutes). I've set the `cache=TRUE` option for the code chunk below so when you knit your Rmd file it reruns only when you make changes to this code chunk. BE PATIENT when you run this command and when you knit the Rmd file!
+
+
+```{r, cache=TRUE}
+#set.seed(4)
+
+#marketing.boost <- gbm(y ~., data = marketing.train.boost, distribution = "bernoulli", n.trees = 20000, interaction.depth = 4, shrinkage = 0.05, cv.folds = 5, verbose = F)
+
+```
+
+##### (c) Use the `gbm.perf` function to obtain the optimal number of trees for the `marketing.boost` model (set `method = "cv"`). What is the optimal number of trees? In addition to returning the optimal number of trees, the `gbm.perf` function also generates a plot. Interpret the plot (Google "gbm.perf plot" for hints).
+
+```{r}
+
+#gbm.perf(marketing.boost, method = "cv")
+
+```
+
+
+During boosting, simple base-learners are iteratively combined to produce the final estimate. This graph shows the performance metric's evolution as the gradient boosting algorithm combines a progressively larger number of base learners.
+Source: https://stats.stackexchange.com/questions/393463/how-to-interpret-chart-generated-by-gbm-perf-function
+
+
+##### (d) Use the `predict` command to obtain probability estimates on the test data (refer to documentation for coding hints). Make sure you set the `n.trees` to the optimal number of trees obtained above. Create the ROC object for the boosted tree model. Then plot the ROC curves of the random forest (color it "blue") and the boosted tree model (color it "red") on the same plot. Compare the AUC for these two methods. Do we do better with the boosted tree model than with the random forest? Is one model strictly performing better than the other model in every region on the plot? Given a specificity level of, say, 0.9, which model should we pick? How about given a specificity level of, say, 0.4? Which model performs better in the region that is most relevant in this marketing setting?
+
+**Note:** Given the seeds I set before fitting the models, the ROC plot I get looks like the following where the two curves cross each other (although in the actual plot the gap between the two curves isn't nearly as pronounced). However, due to the randomness in the process, your plot may or may not look the same as mine. If your code is correct but you don't get the crossing curves, don't sweat. Just answer the questions based on the ROC plot you get.
+![roc_cross.png](roc_cross.png){width=30%}
+
+
+```{r}
+#pred.prob1 <- predict(marketing.boost, newdata = marketing.test, n.trees = 14261, type = "response") 
+
+#ROC for random forest 
+#roc.1 <- roc(marketing.test$y, score.prob, auc = TRUE)  
+
+#ROC for boosted tree model 
+#roc.2 <- roc(marketing.test$y, pred.prob1, auc = TRUE) 
+
+#plot(roc.1, col = "blue")
+#plot(roc.2, col="red", add = TRUE)
+
+#calculate AUC for ROC1
+#roc.1$auc
+
+#calculate AUC for ROC2
+#roc.2$auc
+```
+Note: My code ran for the first time and I got the following analysis. For some reason, it kept throwing an error as I knitted it, hence I had to comment out everything. 
+No. We do better with the random forest model. The random forest model performs strictly better than the other model in every region on the plot. At 0.9, we should pick random forest and even at 0.4, we should pick random forest as the AUC is greater for random forest than boosted model. 
+
+
+### Problem 3: Clustering US States by Violent Crime Rates
+
+We will use the built-in R dataset `USArrests` which contains statistics in arrests per 100,000 residents for assault, murder, and rape in each of the 50 US states in 1973. It also includes the percentage of the population living in urban areas in each state. `View()` the dataset and read the help with `?USArrests` to find out more about the dataset.
+
+##### (a) You saw in Lab 4 that we need to standardized the data before applying methods such as KNN that builds upon distances between observations. K-means clustering is yet another such method that often requires the input data to be standardized. Use the appropriate function to standardize the data and save the resulting data frame as `USArrests.scaled`.
+
+```{r}
+
+USArrests.scaled <- scale(USArrests)
+USArrests.scaled
+
+```
+
+
+##### (b) Use the `kmeans` function to cluster the data for `K` being 2, 3, 4, and 5 respectively. Set `nstart = 20` for `kmeans`. Then use the function `fviz_cluster` (refer to online documentation for syntax; you only need to supply the `object` and the `data` arguments) to visualize the result (one plot for each `K` value). Compare the clusters generated given different `K` values. What do you observe? Are the clusters given larger K nested within the clusters given smaller K?
+
+**Note:** the axes of the plots generated by `fviz_cluster` are the first and the second principal components (discussed in Lecture 12). As we saw / will see in Lecture 12, the first principal component represents the overall rates of serious crimes, whereas the second principal component represents the level of urbanization. The sign of the axes of your plots may be flipped/inverted, i.e. negative direction corresponds to higher crime rate / level of urbanization (this is a common artifact of PCA; you don't need to correct it here; we are just providing this information to help you interpret the plots). 
+
+```{r}
+#For K=2
+km.out2 <- kmeans(USArrests.scaled, 2, nstart=20)
+km.out2
+fviz2 <- fviz_cluster(km.out2, data = USArrests.scaled)
+fviz2
+
+#For K=3 
+set.seed(1)
+km.out3 <- kmeans(USArrests.scaled, 3, nstart=20)
+km.out3
+fviz3 <- fviz_cluster(km.out3, data = USArrests.scaled)
+fviz3
+
+#For K=4 
+set.seed(1)
+km.out4 <- kmeans(USArrests.scaled, 4, nstart=20)
+km.out4
+fviz4 <- fviz_cluster(km.out4, data = USArrests.scaled)
+fviz4
+
+#For K=5
+set.seed(1)
+km.out5 <- kmeans(USArrests.scaled, 5, nstart=20)
+km.out5
+fviz5 <- fviz_cluster(km.out5, data = USArrests.scaled)
+fviz5
+```
+
+We can observe that clusters are formed for US States that are similar to each other in violent crime rates. While we do not see any nested clusters from K = 1 to 4, we do see two clusters stretching into each other when K = 5. These clusters do not tell us the optimal number of clusters. Since we see a principal component analysis (PCA) in two dimensions (variables) visualization, it explains for the variance. 
+
+
+##### (c) A popular way to decide the "optimal" number of clusters is called the elbow method, where we plot the Within-Cluster-Sum-of-Squares (abbrev. WCSS, a within-cluster similarity measure that's similar to Within-Cluster-Variation) against increasing `k` values and visually examine at which `k` value the reduction in WCSS starts to slow down (Google "elbow method for clustering" for numerous visual examples). Let's use the function `fviz_nbclust` (refer to online documentation for syntax) to produce the plot and make sure you set the right `method` argument. What is the optimal `k` for this dataset? Explain.
+
+```{r}
+fviz_nbclust(USArrests.scaled, kmeans, method = "wss") + geom_vline(xintercept = 4, linetype = 2)+ labs(subtitle = "Elbow method")
+
+```
+
+Optimal number of clusters: 4 as it appears to be the bend in the knee (or elbow).
+We define clusters such that the total intra-cluster variation (known as total within-cluster variation or total within-cluster sum of square) is minimized. The total within-cluster sum of square (wss) measures the compactness of the clustering and we want it to be as small as possible. 
+Source: https://uc-r.github.io/kmeans_clustering
+
+
+##### (d) From the model with the optimal `k` you identified above, display the locations of the cluster centers in the feature space (hint: check out documentation for `kmeans` function). Note that the values of the centers are in the standardized scale. Tranform them back to the original scale of the data (see [here](https://stackoverflow.com/questions/10287545/backtransform-scale-for-plotting) for hints) and interpret the differences across the clusters based on their center values.
+
+```{r}
+USArrests.scaled * attr(USArrests.scaled, 'scaled:scale') + attr(USArrests.scaled, 'scaled:center')
+kmeans(USArrests.scaled, centers = 4, iter.max = 10, nstart = 1)
+
+```
+
+
+K-means clustering with 4 clusters of sizes 8, 13, 16, 13
+
+Cluster means:
+      Murder    Assault   UrbanPop        Rape
+1  1.4118898  0.8743346 -0.8145211  0.01927104
+2  0.6950701  1.0394414  0.7226370  1.27693964
+3 -0.4894375 -0.3826001  0.5758298 -0.26165379
+4 -0.9615407 -1.1066010 -0.9301069 -0.96676331
+
+Our results create 4 clusters of different US States by Murder, Assault, Urban Population and Rape parameters. Each parameter has a different mean for the cluster. For instance, Murder has a mean of 1.412 for cluster 1 while a mean of 0.695 for cluster 2. Overall, cluster 1 has a higher mean for murder among all other clusters. Cluster 2 has a higher mean for Assault and Rape among all other clusters. 
+Cluster 1 has 13 US States 
+Cluster 2 has 8 US States 
+Cluster 3 has 13 US States 
+Cluster 4 has 16 US States 
